@@ -1,18 +1,16 @@
 import chess
 from datasets import load_from_disk
-import json
 
 ds = load_from_disk("data/tournament-games")
 
-positions = []
+with open("data/tournament_positions.jsonl", "w") as f:
 
-for game in ds:
-    board = chess.Board()
+    for game in ds:
+        board = chess.Board()
 
-    for move in game["moves"]:
-        board.push_san(move)
-        positions.append(board.fen())
+        for move in game["moves"]:
+            board.push_san(move)
 
-
-with open("data/positions.json","w") as f:
-    json.dump(positions,f)
+            f.write(
+                '{"fen": "' + board.fen() + '"}\n'
+            )
