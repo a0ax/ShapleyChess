@@ -1,8 +1,14 @@
 from stockfish import Stockfish
+import os
 
 engine = Stockfish(
-    "stockfish/stockfish-windows-x86-64.exe"
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "stockfish",
+        "stockfish-windows-x86-64-avx2.exe"
+    )
 )
+
 
 def value(board):
     engine.set_fen_position(board.fen())
