@@ -1,1 +1,11 @@
 data
+stockfish/scripts
+stockfish/src/
+stockfish/wiki
+stockfish/AUTHORS
+stockfish/CITATION.cff
+stockfish/CONTRIBUTING.md
+stockfish/Copying.txt
+stockfish/README.md
+stockfish/stockfish-windows-x86-64-avx2.exe
+stockfish/Top CPU Contributors.txt
