@@ -37,7 +37,9 @@ with open("data/tournament_positions.jsonl", "w") as f:
                     "fen": board.fen(),
                     "white": game["White"],
                     "black": game["Black"],
-                    "result": game["Result"]
+                    "result": game["Result"],
+                    "elo_white": game["WhiteElo"],
+                    "elo_black": game["BlackElo"]
                 }) + "\n")
 
                 positions_written += 1
