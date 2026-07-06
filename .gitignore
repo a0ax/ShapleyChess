@@ -11,3 +11,5 @@ stockfish/stockfish-windows-x86-64-avx2.exe
 stockfish/Top CPU Contributors.txt
 src/__pycache__/
 __pycache__
+leela-cpu
+leela-cuda
