@@ -62,6 +62,14 @@ def load_openings() -> dict[str, list[int]]:
         return json.load(handle)
 
 
+def invert_openings(openings: dict[str, list[int]]) -> dict[int, list[str]]:
+    game_to_openings: dict[int, list[str]] = {}
+    for opening_name, game_indices in openings.items():
+        for game_index in game_indices:
+            game_to_openings.setdefault(game_index, []).append(opening_name)
+    return game_to_openings
+
+
 def candidate_from_board(opening_name: str, game_index: int, ply: int, board: chess.Board) -> dict:
     piece_map = board.piece_map()
     return {
@@ -132,18 +140,22 @@ def select_diverse_candidates(candidates: list[dict], limit: int) -> list[dict]:
     return [candidates[index] for index in selected_indices]
 
 
-def extract_for_opening(
-    opening_name: str,
-    game_indices: list[int],
+def collect_candidates(
     dataset,
+    game_to_openings: dict[int, list[str]],
     min_total_pieces: int,
     max_total_pieces: int,
-    max_per_opening: int,
-) -> list[dict]:
-    seen_fens: set[str] = set()
-    candidates: list[dict] = []
+) -> dict[str, list[dict]]:
+    candidates_by_opening: dict[str, list[dict]] = {}
+    seen_fens_by_opening: dict[str, set[str]] = {}
 
-    for game_index in game_indices:
+    relevant_game_indices = sorted(game_to_openings)
+    total_games = len(relevant_game_indices)
+
+    for position, game_index in enumerate(relevant_game_indices, start=1):
+        if position == 1 or position % 1000 == 0 or position == total_games:
+            print(f"  scanned {position:,}/{total_games:,} relevant games")
+
         game_data = dataset[game_index]
         movetext = game_data.get("movetext", "")
         if not movetext:
@@ -156,6 +168,10 @@ def extract_for_opening(
         except Exception:
             continue
 
+        openings_for_game = game_to_openings.get(game_index, [])
+        if not openings_for_game:
+            continue
+
         board = game.board()
         for ply, move in enumerate(game.mainline_moves()):
             board.push(move)
@@ -164,25 +180,28 @@ def extract_for_opening(
                 continue
 
             fen = board.fen()
-            if fen in seen_fens:
-                continue
+            for opening_name in openings_for_game:
+                seen_fens = seen_fens_by_opening.setdefault(opening_name, set())
+                if fen in seen_fens:
+                    continue
 
-            seen_fens.add(fen)
-            candidates.append(
-                candidate_from_board(
-                    opening_name,
-                    game_index,
-                    ply + 1,
-                    board,
+                seen_fens.add(fen)
+                candidates_by_opening.setdefault(opening_name, []).append(
+                    candidate_from_board(
+                        opening_name,
+                        game_index,
+                        ply + 1,
+                        board,
+                    )
                 )
-            )
 
-    return select_diverse_candidates(candidates, max_per_opening)
+    return candidates_by_opening
 
 
 def main() -> None:
     args = parse_args()
     openings = load_openings()
+    game_to_openings = invert_openings(openings)
     dataset = load_from_disk(str(DATASET_PATH))
 
     results = {
@@ -194,24 +213,23 @@ def main() -> None:
         }
     }
 
-    for opening_name, game_indices in openings.items():
-        if not game_indices:
+    print(f"Processing {len(game_to_openings):,} relevant games across {len(openings):,} openings...")
+    candidates_by_opening = collect_candidates(
+        dataset,
+        game_to_openings,
+        args.min_total_pieces,
+        args.max_total_pieces,
+    )
+
+    for opening_name in openings:
+        candidates = candidates_by_opening.get(opening_name, [])
+        if not candidates:
+            print(f"{opening_name}: no qualifying positions")
             continue
 
-        print(f"Extracting {opening_name}...")
-        selected = extract_for_opening(
-            opening_name,
-            game_indices,
-            dataset,
-            args.min_total_pieces,
-            args.max_total_pieces,
-            args.max_per_opening,
-        )
-        if selected:
-            results[opening_name] = selected
-            print(f"  kept {len(selected)} position(s)")
-        else:
-            print("  no qualifying positions")
+        selected = select_diverse_candidates(candidates, args.max_per_opening)
+        results[opening_name] = selected
+        print(f"{opening_name}: kept {len(selected)} of {len(candidates)} candidate(s)")
 
     args.output_file.parent.mkdir(parents=True, exist_ok=True)
     with args.output_file.open("w", encoding="utf-8") as handle:
