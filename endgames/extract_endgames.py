@@ -156,14 +156,16 @@ def select_diverse_candidates(candidates: list[dict], limit: int) -> list[dict]:
 
 def collect_candidates(
     relevant_game_indices: list[int],
+    opening_names: list[str],
     min_total_pieces: int,
     max_total_pieces: int,
 ) -> dict[str, list[dict]]:
     candidates_by_opening: dict[str, list[dict]] = {}
     seen_fens_by_opening: dict[str, set[str]] = {}
+    candidate_target_per_opening = 6
 
     total_games = len(relevant_game_indices)
-    chunk_size = 5000
+    chunk_size = 250
     chunks = [
         relevant_game_indices[index : index + chunk_size]
         for index in range(0, total_games, chunk_size)
@@ -198,6 +200,17 @@ def collect_candidates(
             if position == 1 or position % 20 == 0 or position == len(futures):
                 processed = min(position * chunk_size, total_games)
                 print(f"  scanned ~{processed:,}/{total_games:,} relevant games")
+
+            if all(
+                len(candidates_by_opening.get(opening_name, [])) >= candidate_target_per_opening
+                for opening_name in opening_names
+            ):
+                for pending_future in futures:
+                    pending_future.cancel()
+                print(
+                    f"  reached {candidate_target_per_opening} raw candidate(s) for every opening; stopping early"
+                )
+                break
 
     return candidates_by_opening
 
@@ -273,6 +286,7 @@ def main() -> None:
     print(f"Processing {len(game_to_openings):,} relevant games across {len(openings):,} openings...")
     candidates_by_opening = collect_candidates(
         sorted(game_to_openings),
+        list(openings.keys()),
         args.min_total_pieces,
         args.max_total_pieces,
     )
