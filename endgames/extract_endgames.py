@@ -4,6 +4,8 @@ import argparse
 import io
 import json
 import logging
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import chess
@@ -24,6 +26,18 @@ from utils import (
 
 
 logging.getLogger("chess.pgn").setLevel(logging.CRITICAL)
+
+
+_WORKER_DATASET = None
+_WORKER_GAME_TO_OPENINGS = None
+
+
+def worker_init() -> None:
+    global _WORKER_DATASET, _WORKER_GAME_TO_OPENINGS
+    with OPENINGS_FILE.open("r", encoding="utf-8") as handle:
+        openings = json.load(handle)
+    _WORKER_GAME_TO_OPENINGS = invert_openings(openings)
+    _WORKER_DATASET = load_from_disk(str(DATASET_PATH))
 
 
 def parse_args() -> argparse.Namespace:
@@ -141,22 +155,70 @@ def select_diverse_candidates(candidates: list[dict], limit: int) -> list[dict]:
 
 
 def collect_candidates(
-    dataset,
-    game_to_openings: dict[int, list[str]],
+    relevant_game_indices: list[int],
     min_total_pieces: int,
     max_total_pieces: int,
 ) -> dict[str, list[dict]]:
     candidates_by_opening: dict[str, list[dict]] = {}
     seen_fens_by_opening: dict[str, set[str]] = {}
 
-    relevant_game_indices = sorted(game_to_openings)
     total_games = len(relevant_game_indices)
+    chunk_size = 5000
+    chunks = [
+        relevant_game_indices[index : index + chunk_size]
+        for index in range(0, total_games, chunk_size)
+    ]
 
-    for position, game_index in enumerate(relevant_game_indices, start=1):
-        if position == 1 or position % 1000 == 0 or position == total_games:
-            print(f"  scanned {position:,}/{total_games:,} relevant games")
+    worker_count = min(8, os.cpu_count() or 1)
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        initializer=worker_init,
+    ) as executor:
+        futures = {
+            executor.submit(
+                process_game_chunk,
+                chunk,
+                min_total_pieces,
+                max_total_pieces,
+            ): chunk
+            for chunk in chunks
+        }
 
-        game_data = dataset[game_index]
+        for position, future in enumerate(as_completed(futures), start=1):
+            chunk_result = future.result()
+            for opening_name, opening_candidates in chunk_result.items():
+                seen_fens = seen_fens_by_opening.setdefault(opening_name, set())
+                opening_bucket = candidates_by_opening.setdefault(opening_name, [])
+                for candidate in opening_candidates:
+                    if candidate["fen"] in seen_fens:
+                        continue
+                    seen_fens.add(candidate["fen"])
+                    opening_bucket.append(candidate)
+
+            if position == 1 or position % 20 == 0 or position == len(futures):
+                processed = min(position * chunk_size, total_games)
+                print(f"  scanned ~{processed:,}/{total_games:,} relevant games")
+
+    return candidates_by_opening
+
+
+def process_game_chunk(
+    game_indices: list[int],
+    min_total_pieces: int,
+    max_total_pieces: int,
+) -> dict[str, list[dict]]:
+    assert _WORKER_DATASET is not None
+    assert _WORKER_GAME_TO_OPENINGS is not None
+
+    candidates_by_opening: dict[str, list[dict]] = {}
+    seen_fens_by_opening: dict[str, set[str]] = {}
+
+    for game_index in game_indices:
+        openings_for_game = _WORKER_GAME_TO_OPENINGS.get(game_index, [])
+        if not openings_for_game:
+            continue
+
+        game_data = _WORKER_DATASET[game_index]
         movetext = game_data.get("movetext", "")
         if not movetext:
             continue
@@ -166,10 +228,6 @@ def collect_candidates(
             if game is None:
                 continue
         except Exception:
-            continue
-
-        openings_for_game = game_to_openings.get(game_index, [])
-        if not openings_for_game:
             continue
 
         board = game.board()
@@ -202,7 +260,6 @@ def main() -> None:
     args = parse_args()
     openings = load_openings()
     game_to_openings = invert_openings(openings)
-    dataset = load_from_disk(str(DATASET_PATH))
 
     results = {
         "_metadata": {
@@ -215,8 +272,7 @@ def main() -> None:
 
     print(f"Processing {len(game_to_openings):,} relevant games across {len(openings):,} openings...")
     candidates_by_opening = collect_candidates(
-        dataset,
-        game_to_openings,
+        sorted(game_to_openings),
         args.min_total_pieces,
         args.max_total_pieces,
     )
